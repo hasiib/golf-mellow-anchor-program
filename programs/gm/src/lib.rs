@@ -4,7 +4,6 @@ use anchor_spl::token::{Burn, Mint, MintTo, Token, TokenAccount, Transfer};
 declare_id!("F5QnEMWv3mqzd9sbEy2Zpoipw3ajNiH6bGdWFimoBQxy");
 
 #[program]
-
 pub mod golf_mellow_spl {
     use super::*;
 
@@ -412,22 +411,6 @@ pub enum BurnTokenErrors {
     #[msg("Burn total overflow occurred.")]
     Overflow,
 }
-
-// #[error_code]
-// pub enum CustomError {
-//     #[msg("Unauthorized action.")]
-//     Unauthorized,
-//     #[msg("Unauthorized action.")]
-//     Unauthorized,
-
-//     #[msg("Invalid Polygon address.")]
-//     InvalidPolygonAddress,
-// }
-
-// // #[error_code]
-// // pub enum CustomError {
-
-// // }
 
 #[error_code]
 pub enum CustomError {
