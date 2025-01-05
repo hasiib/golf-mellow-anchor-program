@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{Burn, Mint, MintTo, Token, TokenAccount, Transfer};
 
-declare_id!("F5QnEMWv3mqzd9sbEy2Zpoipw3ajNiH6bGdWFimoBQxy");
+declare_id!("4oNzoWCzooYv6X5SEdpj3F5iKJaC7gepX4cY6qYKWtwK");
 
 #[program]
 pub mod golf_mellow_spl {
@@ -199,6 +199,7 @@ pub struct InitMint<'info> {
         mint::freeze_authority = authority.key(),
         seeds = [b"golf_mellow", mint.key().as_ref()],
         bump,
+        owner = token_program.key(),
     )]
     pub mint: Account<'info, Mint>, // The mint account for the token.
 

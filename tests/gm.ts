@@ -1,75 +1,114 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
-import { Gm } from "../target/types/gm";
-import { PublicKey, SystemProgram } from "@solana/web3.js";
+import { GolfMellowSpl } from "../target/types/golf_mellow_spl";
+import { PublicKey, SystemProgram, Keypair } from "@solana/web3.js";
+import assert from "assert";
+import BN from "bn.js";
 
-describe("gm", () => {
-  // Configure the client to use the local cluster.
-  anchor.setProvider(anchor.AnchorProvider.env());
 
-  const program = anchor.workspace.Gm as Program<Gm>;
+describe("golf_mellow_spl", () => {
+  const provider = anchor.AnchorProvider.local();
+  anchor.setProvider(provider);
 
-  it("Initializes the mint!", async () => {
-    const [mintPda, mintBump] = await PublicKey.findProgramAddress(
-      [Buffer.from("golf_mellow"), mintKey.toBuffer()],
-      program.programId
+  const program = anchor.workspace.GolfMellowSpl as Program<GolfMellowSpl>;
+
+  const mintKeypair = Keypair.generate();
+  const mintProxyKeypair = Keypair.generate();
+
+  const splMintParams = {
+    name: "Golf Mellow Token",
+    symbol: "GM Token",
+    supply: new BN(600_000 * Math.pow(10, 9)),
+    uri: "https://gateway.pinata.cloud/ipfs/bafkreic4y5l7oiglxx2g7hto5rdvsl32armtootuvwefjr5n5vbaigzta4",
+  };
+
+  let mint: PublicKey;
+
+  before(async () => {
+    // Airdrop SOL for transaction fees
+    await provider.connection.requestAirdrop(
+      provider.wallet.publicKey,
+      anchor.web3.LAMPORTS_PER_SOL
     );
 
+    // Derive PDA for the mint account
+    [mint] = PublicKey.findProgramAddressSync(
+      [Buffer.from("golf_mellow"), mintKeypair.publicKey.toBuffer()],
+      program.programId
+    );
+  });
+
+  it("Initializes the mint account", async () => {
     const tx = await program.methods
       .initMint({
-        name: "Test Token",
-        symbol: "TTK",
-        supply: 1000000,
-        uri: "https://gateway.pinata.cloud/ipfs/bafkreic4y5l7oiglxx2g7hto5rdvsl32armtootuvwefjr5n5vbaigzta4",
+        name: splMintParams.name,
+        symbol: splMintParams.symbol,
+        supply: splMintParams.supply,
+        uri: splMintParams.uri,
       })
       .accounts({
-        mint: mintPda,
+        mint: mint,
         authority: provider.wallet.publicKey,
         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
-      .rpc();
-    console.log("Mint initialized with transaction signature", tx);
+      .signers([mintKeypair])
+      .rpc({ commitment: "confirmed" });
+
+    console.log("Mint initialized:", mint.toBase58());
+    console.log(`Transaction: https://explorer.solana.com/tx/${tx}?cluster=devnet`);
   });
 
-  it("Mints tokens!", async () => {
-    const tx = await program.methods
-      .mintTokens(1000)
+  it("Mints tokens to a token account", async () => {
+    const toKeypair = Keypair.generate();
+    const amount = new BN(15_000 * Math.pow(10, 9)); // Max per transaction
+
+    await program.methods
+      .mintTokens(amount)
       .accounts({
-        mint: mintPda,
-        to: toTokenAccount,
-        mintProxyPda: mintProxyPda,
+        mint: mint,
+        to: toKeypair.publicKey,
         authority: provider.wallet.publicKey,
         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
       })
-      .rpc();
-    console.log("Tokens minted with transaction signature", tx);
+      .signers([toKeypair])
+      .rpc({ commitment: "confirmed" });
+
+    const mintAccount = await program.account.mintProxyPda.fetch(mint);
+    assert.strictEqual(mintAccount.mintTotal.toString(), amount.toString());
   });
 
-  it("Burns tokens!", async () => {
-    const tx = await program.methods
-      .burnTokens(500)
+  it("Burns tokens from a token account", async () => {
+    const fromKeypair = Keypair.generate();
+    const burnAmount = new BN(5_000 * Math.pow(10, 9));
+
+    await program.methods
+      .burnTokens(burnAmount)
       .accounts({
-        mint: mintPda,
-        from: fromTokenAccount,
-        burnProxyPda: burnProxyPda,
+        mint: mint,
+        from: fromKeypair.publicKey,
         authority: provider.wallet.publicKey,
         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
       })
-      .rpc();
-    console.log("Tokens burned with transaction signature", tx);
+      .signers([fromKeypair])
+      .rpc({ commitment: "confirmed" });
+
+    const burnAccount = await program.account.burnProxyPda.fetch(mint);
+    assert.strictEqual(burnAccount.burnTotal.toString(), burnAmount.toString());
   });
 
-  it("Transfers tokens!", async () => {
-    const tx = await program.methods
-      .transferTokens(200)
+  it("Stores a Polygon address in the PDA", async () => {
+    const polygonAddress = "0x1234567890abcdef1234567890abcdef12345678";
+
+    await program.methods
+      .storePolygonAddress(polygonAddress)
       .accounts({
-        from: fromTokenAccount,
-        to: toTokenAccount,
+        mint: mint,
         authority: provider.wallet.publicKey,
-        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
       })
-      .rpc();
-    console.log("Tokens transferred with transaction signature", tx);
+      .rpc({ commitment: "confirmed" });
+
+    const polygonPDA = await program.account.polygonAddressPda.fetch(mint);
+    assert.strictEqual(polygonPDA.polygonAddress, polygonAddress);
   });
 });
