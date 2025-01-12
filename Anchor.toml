@@ -5,20 +5,14 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-gm = "F5QnEMWv3mqzd9sbEy2Zpoipw3ajNiH6bGdWFimoBQxy"
+gm = "8LytJusdgxnfPBJZFBGMnvqQLY2ybAqAEHKEZVdGxbm4"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-wallet = "~/.config/solana/id.json"
 cluster = "http://127.0.0.1:8898"
-url = "http://127.0.0.1:8900"
-
-
-[faucet]
-port = 9901
-
+wallet = "~/.config/solana/id.json"
 
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"

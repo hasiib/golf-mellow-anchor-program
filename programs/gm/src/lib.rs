@@ -1,14 +1,16 @@
+#![allow(unexpected_cfgs)]
 use anchor_lang::prelude::*;
 use anchor_spl::token::{Burn, Mint, MintTo, Token, TokenAccount, Transfer};
 
-declare_id!("4oNzoWCzooYv6X5SEdpj3F5iKJaC7gepX4cY6qYKWtwK");
+declare_id!("8LytJusdgxnfPBJZFBGMnvqQLY2ybAqAEHKEZVdGxbm4");
 
 #[program]
 pub mod golf_mellow_spl {
+
     use super::*;
 
     pub fn init_mint(ctx: Context<InitMint>, params: SPLMintParams) -> Result<()> {
-        let mint = &ctx.accounts.mint;
+        let mint_account: &Account<'_, Mint> = &ctx.accounts.mint_account;
 
         // Validation
         require!(
@@ -20,7 +22,7 @@ pub mod golf_mellow_spl {
 
         // Ensure that the mint account exists on-chain and matches params
         require!(
-            mint.key() == ctx.accounts.mint.key(),
+            mint_account.key() == ctx.accounts.mint_account.key(),
             InitMintErrors::MintMismatch
         );
 
@@ -38,20 +40,23 @@ pub mod golf_mellow_spl {
         let mint = &ctx.accounts.mint;
         let mint_proxy_pda = &mut ctx.accounts.mint_proxy_pda;
 
-        // Anti-snipe: Ensure max tokens per transaction is 15,000
+        // Ensure valid minting amount
         require!(
             amount <= 15_000 * 10_u64.pow(mint.decimals as u32),
             MintTokenErrors::ExceedsMaxMintPerTransaction
         );
 
-        // Ensure the total minted doesn't exceed the burned total
-        let total_minted_after = mint_proxy_pda.mint_total + amount;
+        // Ensure minting does not exceed burned total
+        let total_minted_after = mint_proxy_pda
+            .mint_total
+            .checked_add(amount)
+            .ok_or(MintTokenErrors::ExceedsBurnedAmount)?;
         require!(
             total_minted_after <= mint_proxy_pda.burn_total,
             MintTokenErrors::ExceedsBurnedAmount
         );
 
-        // Perform the minting operation
+        // Mint tokens
         let cpi_accounts = MintTo {
             mint: ctx.accounts.mint.to_account_info(),
             to: ctx.accounts.to.to_account_info(),
@@ -61,7 +66,7 @@ pub mod golf_mellow_spl {
         let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
         anchor_spl::token::mint_to(cpi_ctx, amount)?;
 
-        // Update the mint total in the PDA
+        // Update PDA
         mint_proxy_pda.mint_total = total_minted_after;
 
         msg!(
@@ -129,16 +134,16 @@ pub mod golf_mellow_spl {
             CustomError::Unauthorized
         );
 
-        // Ensure the Polygon address is valid
+        // Validate Polygon address format
         require!(
-            polygon_address.len() == 42,
+            polygon_address.len() == 42 && polygon_address.starts_with("0x"),
             CustomError::InvalidPolygonAddress
         );
 
-        // Update the Polygon address in the PDA
+        // Store Polygon address
         polygon_address_pda.polygon_address = polygon_address.clone();
 
-        msg!("Polygon address stored successfully: {}", polygon_address);
+        msg!("Polygon address stored: {}", polygon_address);
         Ok(())
     }
 
@@ -197,11 +202,10 @@ pub struct InitMint<'info> {
         mint::decimals = 9,
         mint::authority = authority.key(),
         mint::freeze_authority = authority.key(),
-        seeds = [b"golf_mellow", mint.key().as_ref()],
+        seeds = [b"golf_mellow", authority.key().as_ref()],
         bump,
-        owner = token_program.key(),
     )]
-    pub mint: Account<'info, Mint>, // The mint account for the token.
+    pub mint_account: Account<'info, Mint>, // The mint account for the token.
 
     #[account(mut)]
     pub authority: Signer<'info>, // Authority that pays for the initialization.
