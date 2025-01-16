@@ -2,7 +2,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{Burn, Mint, MintTo, Token, TokenAccount, Transfer};
 
-declare_id!("8LytJusdgxnfPBJZFBGMnvqQLY2ybAqAEHKEZVdGxbm4");
+declare_id!("81UuRRAtAKH5edrm8iTfaEYKoa7DWWcuqdVNZEeVvJVK");
 
 #[program]
 pub mod golf_mellow_spl {
