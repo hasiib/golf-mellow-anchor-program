@@ -1,99 +1,144 @@
-const anchor = require("@coral-xyz/anchor");
-const { Program, Idl, AnchorProvider, setProvider } = require("@coral-xyz/anchor");
-const { PublicKey, SystemProgram, Keypair } = require("@solana/web3.js");
-const BN = require("bn.js");
-const { useAnchorWallet, useConnection } = require("@solana/wallet-adapter-react");
+import * as anchor from "@coral-xyz/anchor";
+import { PublicKey, SystemProgram } from "@solana/web3.js";
+import BN from "bn.js";
 
-const { connection } = useConnection();
-const wallet = useAnchorWallet();
-
-describe("golf_mellow_program_instructions", () => {
-
-  // Initialize the Anchor provider for local testing
+describe("Golf Mellow SPL PDA Tests", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
 
-  // Import the program using Anchor's workspace abstraction
-  const program = anchor.workspace.GolfMellowSpl as Program;
+  const program = anchor.workspace.GolfMellowSpl;
+  const adminKeypair = anchor.web3.Keypair.generate();
+  const InitMintSeed = "InitMint";
+  const InitializePDASeed = "InitializePDA";
 
-  // Set the program ID explicitly (matches the deployed program ID)
-  const programId = new PublicKey("8LytJusdgxnfPBJZFBGMnvqQLY2ybAqAEHKEZVdGxbm4");
+  // for remaining instructions
+  const clientKeypair = anchor.web3.Keypair.generate();
+  const MintTokensSeed = "MintTokens";
 
-  it("Initializes the mint!", async () => {
-    // Generate a new admin keypair to represent the authority of the mint
-    const adminKeypair = Keypair.generate();
+  let mintPDA: PublicKey;
+  let initProxyPDA: PublicKey;
 
-    console.log("Admin public key:", adminKeypair.publicKey.toBase58());
-    console.log("Admin secret key:", adminKeypair.secretKey);
-
-    // Create a deterministic public key for the mint account using `createWithSeed`
-    const mintKey = await PublicKey.createWithSeed(
-      adminKeypair.publicKey,
-      "golf_mellow",
-      programId
+  async function derivePDA(
+    seed: string,
+    publicKey: PublicKey
+  ): Promise<[PublicKey, number]> {
+    return PublicKey.findProgramAddressSync(
+      [Buffer.from(seed), publicKey.toBuffer()],
+      program.programId
     );
+  }
 
-    // Derive a PDA (Program Derived Address) for the mint account
-    const [mintPda, mintBump] = await PublicKey.findProgramAddressSync(
-      [Buffer.from("golf_mellow"), mintKey.toBuffer()],
-      programId
-    );
+  async function isAccountInitialized(publicKey: PublicKey): Promise<boolean> {
+    const accountInfo = await provider.connection.getAccountInfo(publicKey);
+    return accountInfo !== null;
+  }
 
-    // Airdrop 1 SOL to the provider's wallet to fund transactions
-    await provider.connection.requestAirdrop(
-      provider.wallet.publicKey,
-      anchor.web3.LAMPORTS_PER_SOL
-    );
+  it("Initialize Mint with PDA", async () => {
+    const mintParams = {
+      name: "Golf Mellow Token",
+      symbol: "GMT",
+      supply: new BN(600_000 * Math.pow(10, 9)),
+      uri: "https://gateway.pinata.cloud/ipfs/bafkreic4y5l7oiglxx2g7hto5rdvsl32armtootuvwefjr5n5vbaigzta4",
+    };
 
-    // Call the `initMint` instruction to initialize the mint account
-    const tx = await program.methods
-      .initMint({
-        name: "Golf Mellow Token",
-        symbol: "GM Token",
-        supply: new BN(600_000 * Math.pow(10, 9)),
-        uri: "https://gateway.pinata.cloud/ipfs/bafkreic4y5l7oiglxx2g7hto5rdvsl32armtootuvwefjr5n5vbaigzta4",
-      })
-      .accounts({
-        mintAccount: mintPda,
-        authority: adminKeypair.publicKey,
-        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
-        systemProgram: SystemProgram.programId,
-      })
-      .signers([adminKeypair])
-      .rpc({ commitment: "confirmed" });
+    [mintPDA] = await derivePDA(InitMintSeed, adminKeypair.publicKey);
 
-    console.log("Transaction signature for initMint:", tx);
+    if (!(await isAccountInitialized(mintPDA))) {
+      console.log("Mint account not initialized. Initializing...");
+
+      const balance = await provider.connection.getBalance(
+        adminKeypair.publicKey
+      );
+      if (balance < 2e9) {
+        console.log("Airdropping SOL to admin wallet...");
+        const airdropSignature = await provider.connection.requestAirdrop(
+          adminKeypair.publicKey,
+          2e9
+        );
+
+        const latestBlockhash = await provider.connection.getLatestBlockhash();
+        await provider.connection.confirmTransaction(
+          {
+            signature: airdropSignature,
+            blockhash: latestBlockhash.blockhash,
+            lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+          },
+          "confirmed"
+        );
+
+        console.log("Airdrop completed.");
+      }
+
+      console.log("Mint PDA:", mintPDA.toBase58());
+
+      const tx = await program.methods
+        .initMint(mintParams)
+        .accounts({
+          mint: mintPDA,
+          authority: adminKeypair.publicKey,
+          systemProgram: SystemProgram.programId,
+          tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+          rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+        })
+        .signers([adminKeypair])
+        .rpc();
+
+      console.log("Transaction signature:", tx);
+    } else {
+      console.log("Mint account already initialized. Skipping initialization.");
+    }
   });
 
-  it("Mints tokens!", async () => {
-    // Generate a new recipient keypair for the token account
-    const toTokenAccount = Keypair.generate();
+  it("Initialize PDA", async () => {
+    const polygonAddress = "0x1234567890abcdef1234567890abcdef12345678";
+    [initProxyPDA] = await derivePDA(InitializePDASeed, mintPDA);
 
-    // Derive the PDA for the mint proxy (tracks minting data)
-    const [mintProxyPda, mintProxyBump] = await PublicKey.findProgramAddressSync(
-      [Buffer.from("mint_pda"), toTokenAccount.publicKey.toBuffer()],
-      programId
-    );
+    if (!(await isAccountInitialized(initProxyPDA))) {
+      console.log("Proxy PDA not initialized. Initializing...");
 
-    // Airdrop 1 SOL to the recipient's wallet to fund transactions
-    await provider.connection.requestAirdrop(
-      toTokenAccount.publicKey,
-      anchor.web3.LAMPORTS_PER_SOL
-    );
+      const tx = await program.methods
+        .initializePda({ polygonAddress })
+        .accounts({
+          mintAccount: mintPDA,
+          initProxyPda: initProxyPDA,
+          authority: adminKeypair.publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([adminKeypair])
+        .rpc();
 
-    // Call the `mintTokens` instruction to mint tokens to the recipient account
+      console.log("PDA initialized successfully. Transaction:", tx);
+    } else {
+      console.log("Proxy PDA already initialized. Skipping initialization.");
+    }
+  });
+
+  it("Mint Tokens Using PDA", async () => {
+    const recipientTokenAccount = await anchor.utils.token.associatedAddress({
+      mint: mintPDA,
+      owner: adminKeypair.publicKey,
+    });
+
+    const [mintProxyPDA] = await derivePDA("MintTokens", mintPDA);
+
     const tx = await program.methods
       .mintTokens(new BN(1_000 * Math.pow(10, 9)))
       .accounts({
-        mint: mintProxyPda,
-        to: toTokenAccount.publicKey,
-        mintProxyPda: mintProxyPda,
-        authority: provider.wallet.publicKey,
+        mint: mintPDA,
+        destination: await anchor.utils.token.associatedAddress({
+          mint: mintPDA,
+          owner: adminKeypair.publicKey,
+        }),
+        mintProxyPda: mintProxyPDA,
+        authority: adminKeypair.publicKey,
         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+        associatedTokenProgram: anchor.utils.token.ASSOCIATED_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+        rent: anchor.web3.SYSVAR_RENT_PUBKEY,
       })
-      .signers([toTokenAccount])
-      .rpc({ commitment: "confirmed" });
+      .signers([adminKeypair])
+      .rpc();
 
-    console.log("Transaction signature for mintTokens:", tx);
+    console.log("Tokens minted successfully. Transaction:", tx);
   });
 });

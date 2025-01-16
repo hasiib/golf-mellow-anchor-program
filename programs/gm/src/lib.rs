@@ -1,8 +1,9 @@
 #![allow(unexpected_cfgs)]
 use anchor_lang::prelude::*;
+use anchor_spl::associated_token::AssociatedToken;
 use anchor_spl::token::{Burn, Mint, MintTo, Token, TokenAccount, Transfer};
-
 declare_id!("81UuRRAtAKH5edrm8iTfaEYKoa7DWWcuqdVNZEeVvJVK");
+// declare_id!("DkBjgfvFxhGcnwDSyLdpiHgPjrNWuUwgpRgdocvfhd35");
 
 #[program]
 pub mod golf_mellow_spl {
@@ -10,8 +11,6 @@ pub mod golf_mellow_spl {
     use super::*;
 
     pub fn init_mint(ctx: Context<InitMint>, params: SPLMintParams) -> Result<()> {
-        let mint_account: &Account<'_, Mint> = &ctx.accounts.mint_account;
-
         // Validation
         require!(
             params.supply <= 600_000 * 10_u64.pow(9), // Updated total supply
@@ -20,11 +19,18 @@ pub mod golf_mellow_spl {
         require!(params.name.len() <= 32, InitMintErrors::NameTooLong);
         require!(params.symbol.len() <= 10, InitMintErrors::SymbolTooLong);
 
-        // Ensure that the mint account exists on-chain and matches params
-        require!(
-            mint_account.key() == ctx.accounts.mint_account.key(),
-            InitMintErrors::MintMismatch
-        );
+        // CPI to initialize the mint account using InitializeMint2
+        let cpi_accounts = anchor_spl::token::InitializeMint2 {
+            mint: ctx.accounts.mint.to_account_info(),
+        };
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+        anchor_spl::token::initialize_mint2(
+            cpi_ctx,
+            9,                                // Decimals for the token
+            ctx.accounts.authority.key,       // Mint authority
+            Some(ctx.accounts.authority.key), // Freeze authority (optional)
+        )?;
 
         msg!(
             "Mint account initialized successfully: Name {}, Symbol {}, Supply {}",
@@ -33,6 +39,20 @@ pub mod golf_mellow_spl {
             params.supply
         );
 
+        Ok(())
+    }
+
+    pub fn initialize_pda(ctx: Context<InitializePDA>, params: PDAInitParams) -> Result<()> {
+        let init_proxy_pda = &mut ctx.accounts.init_proxy_pda;
+
+        // Set the PDA data
+        init_proxy_pda.authority = ctx.accounts.authority.key();
+        init_proxy_pda.polygon_address = params.polygon_address.clone();
+        init_proxy_pda.mint_total = 0; // Initialize to 0
+        init_proxy_pda.burn_total = 0; // Initialize to 0
+
+        msg!("PDA initialized successfully!");
+        msg!("Polygon Address: {}", params.polygon_address);
         Ok(())
     }
 
@@ -56,17 +76,17 @@ pub mod golf_mellow_spl {
             MintTokenErrors::ExceedsBurnedAmount
         );
 
-        // Mint tokens
+        // Mint tokens to the destination
         let cpi_accounts = MintTo {
             mint: ctx.accounts.mint.to_account_info(),
-            to: ctx.accounts.to.to_account_info(),
+            to: ctx.accounts.destination.to_account_info(),
             authority: ctx.accounts.authority.to_account_info(),
         };
         let cpi_program = ctx.accounts.token_program.to_account_info();
         let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
         anchor_spl::token::mint_to(cpi_ctx, amount)?;
 
-        // Update PDA
+        // Update the mint total in the PDA
         mint_proxy_pda.mint_total = total_minted_after;
 
         msg!(
@@ -74,20 +94,6 @@ pub mod golf_mellow_spl {
             amount,
             mint_proxy_pda.mint_total
         );
-        Ok(())
-    }
-
-    pub fn initialize_pda(ctx: Context<InitializePDA>, params: PDAInitParams) -> Result<()> {
-        let init_proxy_pda = &mut ctx.accounts.init_proxy_pda;
-
-        // Set the PDA data
-        init_proxy_pda.authority = ctx.accounts.authority.key();
-        init_proxy_pda.polygon_address = params.polygon_address.clone();
-        init_proxy_pda.mint_total = 0; // Initialize to 0
-        init_proxy_pda.burn_total = 0; // Initialize to 0
-
-        msg!("PDA initialized successfully!");
-        msg!("Polygon Address: {}", params.polygon_address);
         Ok(())
     }
 
@@ -202,16 +208,16 @@ pub struct InitMint<'info> {
         mint::decimals = 9,
         mint::authority = authority.key(),
         mint::freeze_authority = authority.key(),
-        seeds = [b"golf_mellow", authority.key().as_ref()],
+        seeds = [b"InitMint", authority.key().as_ref()],
         bump,
     )]
-    pub mint_account: Account<'info, Mint>, // The mint account for the token.
+    pub mint: Account<'info, Mint>,
 
     #[account(mut)]
-    pub authority: Signer<'info>, // Authority that pays for the initialization.
-
-    pub token_program: Program<'info, Token>, // Program to handle SPL Token operations.
-    pub system_program: Program<'info, System>, // System program for account creation.
+    pub authority: Signer<'info>,
+    pub rent: Sysvar<'info, Rent>,
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
@@ -227,16 +233,28 @@ pub struct MintTokens<'info> {
     #[account(mut)]
     pub mint: Account<'info, Mint>, // Mint account
 
-    #[account(mut)]
-    pub to: Account<'info, TokenAccount>,
+    #[account(
+        init_if_needed,
+        payer = authority,
+        associated_token::mint = mint,
+        associated_token::authority = authority,
+    )]
+    pub destination: Account<'info, TokenAccount>, // Destination token account (ATA)
 
-    #[account(mut, seeds = [b"mint_pda", mint.key().as_ref()], bump = mint_proxy_pda.bump)]
+    #[account(
+        mut,
+        seeds = [b"MintTokens", mint.key().as_ref()],
+        bump = mint_proxy_pda.bump
+    )]
     pub mint_proxy_pda: Account<'info, MintProxyPDA>, // PDA holding mint data
 
-    #[account(signer)]
-    pub authority: Signer<'info>, // Must match the mint authority
+    #[account(mut)]
+    pub authority: Signer<'info>, // Mint authority (payer for ATA creation)
 
     pub token_program: Program<'info, Token>, // SPL Token program
+    pub associated_token_program: Program<'info, AssociatedToken>, // Associated Token program
+    pub system_program: Program<'info, System>, // System program
+    pub rent: Sysvar<'info, Rent>,            // Rent sysvar
 }
 
 #[account]
@@ -256,7 +274,7 @@ pub struct InitializePDA<'info> {
 
     #[account(
         init,
-        seeds = [b"golf_mellow", mint_account.key().as_ref()],
+        seeds = [b"InitializePDA", mint_account.key().as_ref()],
         bump,
         payer = authority,
         space = 8 + InitProxyPDA::SPACE
@@ -299,7 +317,7 @@ pub struct BurnTokens<'info> {
     #[account(mut)]
     pub from: Account<'info, TokenAccount>, // Token account to burn tokens from
 
-    #[account(mut, seeds = [b"mint_pda", mint.key().as_ref()], bump = burn_proxy_pda.bump)]
+    #[account(mut, seeds = [b"BurnTokens", mint.key().as_ref()], bump = burn_proxy_pda.bump)]
     pub burn_proxy_pda: Account<'info, BurnProxyPDA>, // PDA holding mint and burn data
 
     #[account(signer)]
@@ -340,7 +358,7 @@ pub struct TrackBurnMetadata<'info> {
     /// CHECK: This is the mint account. It is only used for deriving the PDA and no other operations are performed.
     pub mint: AccountInfo<'info>, // Token mint account
 
-    #[account(mut, seeds = [b"mint_pda", mint.key().as_ref()], bump)]
+    #[account(mut, seeds = [b"TrackBurnMetadata", mint.key().as_ref()], bump)]
     pub burn_metadata_pda: Account<'info, BurnMetadataPDA>, // PDA associated with the mint
 
     pub authority: Signer<'info>, // Must match PDA's authority
@@ -361,7 +379,7 @@ pub struct StorePolygonAddress<'info> {
     /// CHECK: This is the mint account. It is only used for deriving the PDA and no other operations are performed.
     pub mint: AccountInfo<'info>, // Token mint account
 
-    #[account(mut, seeds = [b"mint_pda", mint.key().as_ref()], bump)]
+    #[account(mut, seeds = [b"StorePolygonAddress", mint.key().as_ref()], bump)]
     pub polygon_address_pda: Account<'info, PolygonAddressPDA>, // PDA associated with the mint
 
     pub authority: Signer<'info>, // Must match PDA's authority
